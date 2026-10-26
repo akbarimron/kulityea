@@ -1,6 +1,13 @@
 import type { Outputs } from './types';
 
-/** False when the app runs on a cloud host, where Wi-Fi sharing cannot work. */
+export interface ShareResult {
+  url: string;
+  mode: 'drive' | 'lan';
+  /** Some files were left out because the host refused the upload size. */
+  partial?: boolean;
+}
+
+/** False when the app runs on a cloud host without Google Drive set up. */
 export async function shareAvailable(): Promise<boolean> {
   try {
     const res = await fetch('/api/share', { cache: 'no-store' });
@@ -11,8 +18,7 @@ export async function shareAvailable(): Promise<boolean> {
   }
 }
 
-/** Sends the finished files to the kiosk's own server and returns the phone link. */
-export async function uploadSession(outputs: Outputs): Promise<string> {
+async function send(outputs: Outputs, withVideo: boolean) {
   const form = new FormData();
   const add = async (field: string, url?: string) => {
     if (!url) return;
@@ -22,17 +28,26 @@ export async function uploadSession(outputs: Outputs): Promise<string> {
   await Promise.all([
     add('photo', outputs.photoUrl),
     add('gif', outputs.gifUrl),
-    add('video', outputs.videoUrl),
-    add('timelapse', outputs.timelapseUrl),
+    withVideo ? add('video', outputs.videoUrl) : undefined,
+    withVideo ? add('timelapse', outputs.timelapseUrl) : undefined,
   ]);
-
-  let res: Response;
   try {
-    res = await fetch('/api/share', { method: 'POST', body: form });
+    return await fetch('/api/share', { method: 'POST', body: form });
   } catch {
     throw new Error('Server photobooth tidak merespons.');
   }
-  const data = (await res.json().catch(() => ({}))) as { url?: string; message?: string };
+}
+
+/** Sends the finished files to the server and returns the link for the QR. */
+export async function uploadSession(outputs: Outputs): Promise<ShareResult> {
+  let res = await send(outputs, true);
+  let partial = false;
+  // Cloud hosts cap request size (Vercel: about 4.5 MB). Retry with the photo and GIF only.
+  if (res.status === 413) {
+    res = await send(outputs, false);
+    partial = true;
+  }
+  const data = (await res.json().catch(() => ({}))) as { url?: string; mode?: 'drive' | 'lan'; message?: string };
   if (!res.ok || !data.url) throw new Error(data.message ?? 'Gagal menyiapkan link unduhan.');
-  return data.url;
+  return { url: data.url, mode: data.mode ?? 'lan', partial };
 }

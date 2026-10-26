@@ -33,24 +33,26 @@ function MediaCard({ title, children, href, file }: { title: string; children: R
 
 type ShareState =
   | { status: 'loading' }
-  | { status: 'ready'; url: string }
+  | { status: 'ready'; url: string; drive: boolean; partial?: boolean }
   | { status: 'error'; message: string }
   | { status: 'unavailable' };
 
-/** QR to this session's download page, served by the kiosk over its Wi-Fi. */
+/** QR to this session's Google Drive folder, or to its download page on the kiosk's Wi-Fi. */
 function ShareCard() {
   const outputs = useBooth((s) => s.outputs);
   const setOutputs = useBooth((s) => s.setOutputs);
-  const [state, setState] = useState<ShareState>(outputs.shareUrl ? { status: 'ready', url: outputs.shareUrl } : { status: 'loading' });
+  const [state, setState] = useState<ShareState>(
+    outputs.shareUrl ? { status: 'ready', url: outputs.shareUrl, drive: outputs.shareUrl.includes('drive.google.com') } : { status: 'loading' }
+  );
   const startedRef = useRef(false);
 
   const run = useCallback(async () => {
     setState({ status: 'loading' });
     if (!(await shareAvailable())) return setState({ status: 'unavailable' });
     try {
-      const url = await uploadSession(useBooth.getState().outputs);
-      setOutputs({ shareUrl: url });
-      setState({ status: 'ready', url });
+      const result = await uploadSession(useBooth.getState().outputs);
+      setOutputs({ shareUrl: result.url });
+      setState({ status: 'ready', url: result.url, drive: result.mode === 'drive', partial: result.partial });
     } catch (err) {
       setState({ status: 'error', message: (err as Error).message });
     }
@@ -66,11 +68,16 @@ function ShareCard() {
     <section aria-live="polite" className="rounded-2xl bg-surface p-4">
       {state.status === 'ready' ? (
         <div className="flex flex-col items-center gap-3 text-center">
-          <p className="font-semibold">Pindai untuk simpan ke HP</p>
+          <p className="font-semibold">{state.drive ? 'Pindai untuk buka di Google Drive' : 'Pindai untuk simpan ke HP'}</p>
           <div className="rounded-xl bg-white p-2">
             <QRCodeSVG value={state.url} size={176} fgColor="#16301C" level="M" title="QR link unduhan" />
           </div>
-          <p className="text-sm text-ink-soft">HP harus tersambung ke WiFi yang sama dengan laptop photobooth.</p>
+          <p className="text-sm text-ink-soft">
+            {state.drive
+              ? 'Semua foto dan video sesi ini ada di satu folder Google Drive.'
+              : 'HP harus tersambung ke WiFi yang sama dengan laptop photobooth.'}
+          </p>
+          {state.partial && <p className="text-sm text-ink-soft">Video terlalu besar untuk diunggah dari sini, pakai tombol Unduh.</p>}
           <p className="break-all text-xs text-ink-soft">{state.url}</p>
         </div>
       ) : state.status === 'unavailable' ? (

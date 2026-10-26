@@ -33,7 +33,10 @@ const ID_RE = /^[0-9a-f-]{36}$/;
  * (Vercel) can neither see the venue Wi-Fi nor keep files on its disk.
  */
 export function shareAvailability(): { available: true } | { available: false; reason: 'cloud' } {
-  if (process.env.VERCEL) return { available: false, reason: 'cloud' };
+  const drive = Boolean(
+    process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN && process.env.GOOGLE_DRIVE_FOLDER_ID
+  );
+  if (process.env.VERCEL && !drive) return { available: false, reason: 'cloud' };
   return { available: true };
 }
 

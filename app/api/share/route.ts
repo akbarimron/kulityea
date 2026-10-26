@@ -10,6 +10,7 @@ import {
   type ShareKind,
   type ShareManifest,
 } from '@/lib/share-store';
+import { driveConfigured, uploadSessionToDrive } from '@/lib/google-drive';
 
 /** Lets the kiosk ask, before uploading anything, whether phone sharing works here. */
 export function GET() {
@@ -33,26 +34,30 @@ const EXT: Record<string, string> = {
 
 const MAX_FILE_BYTES = 60 * 1024 * 1024;
 
-/** Saves a finished session on this laptop and returns the link guests open on their phone. */
+interface Incoming {
+  kind: ShareKind;
+  name: string;
+  type: string;
+  data: Buffer;
+}
+
+/**
+ * Takes a finished session and returns the link for the QR:
+ * a Google Drive folder when Drive is set up, otherwise a page on this laptop's Wi-Fi.
+ */
 export async function POST(request: Request) {
   if (!shareAvailability().available) {
     return Response.json({ error: 'cloud', message: 'QR hanya aktif saat photobooth dijalankan dari laptop kiosk.' }, { status: 501 });
   }
   const host = request.headers.get('host') ?? 'localhost:3000';
   const hostname = host.replace(/:\d+$/, '');
-  // Guests' phones only read. Uploads come from the kiosk screen itself (opened as localhost),
-  // unless the operator opts in to a separate kiosk device.
+  // Guests' phones only read. Uploads come from the kiosk screen itself (opened as localhost).
+  // On a cloud host with Drive set up there is no local screen, so uploads are allowed there.
   const local = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
-  if (!local && process.env.KIOSK_ALLOW_REMOTE_UPLOAD !== '1') {
+  const cloudDrive = Boolean(process.env.VERCEL) && driveConfigured();
+  if (!local && !cloudDrive && process.env.KIOSK_ALLOW_REMOTE_UPLOAD !== '1') {
     return Response.json({ error: 'not-kiosk', message: 'Unggahan hanya diterima dari laptop kiosk.' }, { status: 403 });
   }
-  const port = host.includes(':') ? host.split(':').pop() : '';
-  const configured = process.env.KIOSK_PUBLIC_URL?.replace(/\/$/, '');
-  const ip = lanAddress();
-  if (!configured && !ip) {
-    return Response.json({ error: 'no-lan', message: 'Laptop kiosk belum tersambung ke WiFi.' }, { status: 503 });
-  }
-  const base = configured ?? `http://${ip}${port ? `:${port}` : ''}`;
 
   let form: FormData;
   try {
@@ -61,30 +66,54 @@ export async function POST(request: Request) {
     return Response.json({ error: 'bad-form', message: 'Data unggahan tidak terbaca.' }, { status: 400 });
   }
 
-  const id = randomUUID();
-  const dir = shareDir(id);
-  await fs.mkdir(dir, { recursive: true });
-
-  const files: ShareFile[] = [];
-  for (const { field, base: name } of FIELDS) {
+  const incoming: Incoming[] = [];
+  for (const { field, base } of FIELDS) {
     const value = form.get(field);
-    if (!(value instanceof Blob) || value.size === 0) continue;
+    if (!(value instanceof Blob) || value.size === 0 || value.size > MAX_FILE_BYTES) continue;
     const type = value.type.split(';')[0];
     const ext = EXT[type];
-    if (!ext || value.size > MAX_FILE_BYTES) continue;
-    const fileName = `${name}.${ext}`;
-    await fs.writeFile(path.join(dir, fileName), Buffer.from(await value.arrayBuffer()));
-    files.push({ kind: field, name: fileName, type, size: value.size });
+    if (!ext) continue;
+    incoming.push({ kind: field, name: `${base}.${ext}`, type, data: Buffer.from(await value.arrayBuffer()) });
   }
-
-  if (!files.length) {
-    await fs.rm(dir, { recursive: true, force: true });
+  if (!incoming.length) {
     return Response.json({ error: 'empty', message: 'Tidak ada file untuk dibagikan.' }, { status: 400 });
   }
 
+  // 1. Google Drive: one folder per session.
+  let driveError = '';
+  if (driveConfigured()) {
+    try {
+      const url = await uploadSessionToDrive(incoming);
+      return Response.json({ url, mode: 'drive' });
+    } catch (err) {
+      driveError = (err as Error).message;
+      console.error('Google Drive upload failed:', driveError);
+      if (process.env.VERCEL) {
+        return Response.json({ error: 'drive', message: 'Gagal mengunggah ke Google Drive. Coba lagi.' }, { status: 502 });
+      }
+    }
+  }
+
+  // 2. Fallback: keep the files on this laptop and serve them over Wi-Fi.
+  const port = host.includes(':') ? host.split(':').pop() : '';
+  const configured = process.env.KIOSK_PUBLIC_URL?.replace(/\/$/, '');
+  const ip = lanAddress();
+  if (!configured && !ip) {
+    return Response.json({ error: 'no-lan', message: 'Laptop kiosk belum tersambung ke WiFi.' }, { status: 503 });
+  }
+  const base = configured ?? `http://${ip}${port ? `:${port}` : ''}`;
+
+  const id = randomUUID();
+  const dir = shareDir(id);
+  await fs.mkdir(dir, { recursive: true });
+  const files: ShareFile[] = [];
+  for (const f of incoming) {
+    await fs.writeFile(path.join(dir, f.name), f.data);
+    files.push({ kind: f.kind, name: f.name, type: f.type, size: f.data.length });
+  }
   const manifest: ShareManifest = { createdAt: Date.now(), files };
   await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
   removeExpired().catch(() => undefined);
 
-  return Response.json({ id, url: `${base}/s/${id}` });
+  return Response.json({ id, url: `${base}/s/${id}`, mode: 'lan', ...(driveError ? { driveFailed: true } : {}) });
 }
