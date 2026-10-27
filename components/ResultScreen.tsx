@@ -2,9 +2,9 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { Download, Printer, RotateCcw } from 'lucide-react';
+import { Download, Printer, RefreshCw, RotateCcw } from 'lucide-react';
 import { useBooth } from '@/lib/booth/store';
-import { shareAvailable, uploadSession } from '@/lib/booth/share';
+import { DriveFailedError, shareAvailable, uploadSession } from '@/lib/booth/share';
 import { btnPrimary, btnSecondary } from '@/lib/ui';
 import { sound } from '@/lib/audio';
 
@@ -33,7 +33,8 @@ function MediaCard({ title, children, href, file }: { title: string; children: R
 
 type ShareState =
   | { status: 'loading' }
-  | { status: 'ready'; url: string; drive: boolean; partial?: boolean; driveFailed?: boolean }
+  | { status: 'ready'; url: string; drive: boolean; partial?: boolean }
+  | { status: 'driveFailed'; code?: string }
   | { status: 'error'; message: string }
   | { status: 'unavailable' };
 
@@ -45,16 +46,23 @@ function ShareCard() {
     outputs.shareUrl ? { status: 'ready', url: outputs.shareUrl, drive: outputs.shareUrl.includes('drive.google.com') } : { status: 'loading' }
   );
   const startedRef = useRef(false);
+  // Session code from a failed Drive upload: a retry reuses it, so the guest's code stays the same.
+  const codeRef = useRef<string | undefined>(undefined);
 
   const run = useCallback(async () => {
     setState({ status: 'loading' });
     if (!(await shareAvailable())) return setState({ status: 'unavailable' });
     try {
-      const result = await uploadSession(useBooth.getState().outputs);
+      const result = await uploadSession(useBooth.getState().outputs, codeRef.current);
       setOutputs({ shareUrl: result.url });
-      setState({ status: 'ready', url: result.url, drive: result.mode === 'drive', partial: result.partial, driveFailed: result.driveFailed });
+      setState({ status: 'ready', url: result.url, drive: result.mode === 'drive', partial: result.partial });
     } catch (err) {
-      setState({ status: 'error', message: (err as Error).message });
+      if (err instanceof DriveFailedError) {
+        codeRef.current = err.code ?? codeRef.current;
+        setState({ status: 'driveFailed', code: codeRef.current });
+      } else {
+        setState({ status: 'error', message: (err as Error).message });
+      }
     }
   }, [setOutputs]);
 
@@ -77,17 +85,25 @@ function ShareCard() {
               ? 'Semua foto dan video sesi ini ada di satu folder Google Drive.'
               : 'HP harus tersambung ke WiFi yang sama dengan laptop photobooth.'}
           </p>
-          {state.driveFailed && (
-            <div className="w-full space-y-1 rounded-xl bg-sun/15 p-3">
-              <p className="text-sm font-semibold">Google Drive tidak tersambung</p>
-              <p className="text-sm text-ink-soft">Cek internet laptop, lalu kirim ulang.</p>
-              <button onClick={run} className="h-11 text-sm font-semibold text-leaf underline underline-offset-4">
-                Kirim ulang ke Google Drive
-              </button>
-            </div>
-          )}
           {state.partial && <p className="text-sm text-ink-soft">Video terlalu besar untuk diunggah dari sini, pakai tombol Unduh.</p>}
           <p className="break-all text-xs text-ink-soft">{state.url}</p>
+        </div>
+      ) : state.status === 'driveFailed' ? (
+        <div className="space-y-3">
+          <p className="font-semibold">Hasil fotomu dikirim lewat DM Instagram</p>
+          <p className="text-sm text-ink-soft">
+            DM <b className="text-ink">@kulittea.co</b> dan sebutkan kode sesi ini. Foto dan videomu akan kami kirim ke sana.
+          </p>
+          {state.code && (
+            <p className="rounded-xl bg-cream px-4 py-3 text-center">
+              <span className="block text-xs text-ink-soft">Kode sesi</span>
+              <span className="font-display text-3xl font-bold tracking-wider">{state.code}</span>
+            </p>
+          )}
+          <button onClick={run} className={`${btnSecondary} w-full`}>
+            <RefreshCw className="h-5 w-5" aria-hidden="true" />
+            Coba unggah lagi ke Google Drive
+          </button>
         </div>
       ) : state.status === 'unavailable' ? (
         <div className="space-y-2">

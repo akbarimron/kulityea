@@ -34,6 +34,18 @@ const EXT: Record<string, string> = {
 
 const MAX_FILE_BYTES = 60 * 1024 * 1024;
 
+/** Sessions that could not reach Google Drive, kept so staff can send them by Instagram DM. */
+const BACKUP_DIR = path.join(/*turbopackIgnore: true*/ process.cwd(), 'hasil-gagal-upload');
+const CODE_RE = /^\d{4}-\d{4}$/;
+const backupDir = (code: string) => path.join(BACKUP_DIR, code);
+
+/** Short code the guest can read out in a DM: date-time plus a random digit pair, e.g. 1027-1432. */
+function sessionCode() {
+  const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}${pad(d.getMinutes())}-${pad(d.getSeconds())}${pad(Math.floor(Math.random() * 100))}`;
+}
+
 interface Incoming {
   kind: ShareKind;
   name: string;
@@ -79,22 +91,29 @@ export async function POST(request: Request) {
     return Response.json({ error: 'empty', message: 'Tidak ada file untuk dibagikan.' }, { status: 400 });
   }
 
-  // 1. Google Drive: one folder per session.
-  let driveError = '';
+  // 1. Google Drive: one folder per session. No Wi-Fi QR when Drive is set up:
+  //    if the upload fails, the files are kept on this laptop under a session code
+  //    and the guest gets them by Instagram DM.
   if (driveConfigured()) {
+    const prevCode = String(form.get('code') ?? '');
     try {
       const url = await uploadSessionToDrive(incoming);
+      if (CODE_RE.test(prevCode)) await fs.rm(backupDir(prevCode), { recursive: true, force: true }).catch(() => undefined);
       return Response.json({ url, mode: 'drive' });
     } catch (err) {
-      driveError = (err as Error).message;
-      console.error('Google Drive upload failed:', driveError);
+      console.error('Google Drive upload failed:', (err as Error).message);
       if (process.env.VERCEL) {
-        return Response.json({ error: 'drive', message: 'Gagal mengunggah ke Google Drive. Coba lagi.' }, { status: 502 });
+        return Response.json({ error: 'drive', driveFailed: true, message: 'Gagal mengunggah ke Google Drive.' }, { status: 502 });
       }
+      const code = CODE_RE.test(prevCode) ? prevCode : sessionCode();
+      const dir = backupDir(code);
+      await fs.mkdir(dir, { recursive: true });
+      for (const f of incoming) await fs.writeFile(path.join(dir, f.name), f.data);
+      return Response.json({ error: 'drive', driveFailed: true, code, message: 'Gagal mengunggah ke Google Drive.' }, { status: 502 });
     }
   }
 
-  // 2. Fallback: keep the files on this laptop and serve them over Wi-Fi.
+  // 2. Drive not set up: keep the files on this laptop and serve them over Wi-Fi.
   const port = host.includes(':') ? host.split(':').pop() : '';
   const configured = process.env.KIOSK_PUBLIC_URL?.replace(/\/$/, '');
   const ip = lanAddress();
@@ -115,5 +134,5 @@ export async function POST(request: Request) {
   await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
   removeExpired().catch(() => undefined);
 
-  return Response.json({ id, url: `${base}/s/${id}`, mode: 'lan', ...(driveError ? { driveFailed: true } : {}) });
+  return Response.json({ id, url: `${base}/s/${id}`, mode: 'lan' });
 }

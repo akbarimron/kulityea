@@ -16,3 +16,6 @@ node_modules
 .DS_Store
 # photobooth sessions shared to phones (stored on the kiosk only)
 .kiosk-shares/
+
+# sessions that failed to upload to Google Drive (sent to guests by Instagram DM)
+hasil-gagal-upload/
