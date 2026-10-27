@@ -5,6 +5,8 @@ export interface ShareResult {
   mode: 'drive' | 'lan';
   /** Some files were left out because the host refused the upload size. */
   partial?: boolean;
+  /** Google Drive is set up but the upload failed, so the Wi-Fi link was used instead. */
+  driveFailed?: boolean;
 }
 
 /** False when the app runs on a cloud host without Google Drive set up. */
@@ -47,7 +49,7 @@ export async function uploadSession(outputs: Outputs): Promise<ShareResult> {
     res = await send(outputs, false);
     partial = true;
   }
-  const data = (await res.json().catch(() => ({}))) as { url?: string; mode?: 'drive' | 'lan'; message?: string };
+  const data = (await res.json().catch(() => ({}))) as { url?: string; mode?: 'drive' | 'lan'; message?: string; driveFailed?: boolean };
   if (!res.ok || !data.url) throw new Error(data.message ?? 'Gagal menyiapkan link unduhan.');
-  return { url: data.url, mode: data.mode ?? 'lan', partial };
+  return { url: data.url, mode: data.mode ?? 'lan', partial, driveFailed: data.driveFailed };
 }

@@ -20,9 +20,31 @@ export function driveConfigured() {
 
 let cached: { token: string; expires: number } | null = null;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * fetch with a timeout and retries. The kiosk's internet can drop for a moment
+ * ("fetch failed", slow DNS) and Google sometimes answers 429/5xx.
+ */
+async function fetchRetry(url: string, init: RequestInit, tries = 4, timeoutMs = 30_000): Promise<Response> {
+  for (let i = 1; ; i++) {
+    try {
+      const res = await fetchRetry(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      if ((res.status === 429 || res.status >= 500) && i < tries) {
+        await sleep(1000 * i);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (i >= tries) throw new Error(`Tidak bisa terhubung ke Google (${(err as Error).message})`);
+      await sleep(1000 * i);
+    }
+  }
+}
+
 async function accessToken(): Promise<string> {
   if (cached && cached.expires > Date.now() + 60_000) return cached.token;
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchRetry(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -40,7 +62,7 @@ async function accessToken(): Promise<string> {
 
 async function api<T>(url: string, init: RequestInit): Promise<T> {
   const token = await accessToken();
-  const res = await fetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } });
+  const res = await fetchRetry(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`Google Drive error ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return (await res.json()) as T;
 }
@@ -56,7 +78,7 @@ async function createFolder(name: string, parent: string) {
 /** Resumable upload, so large videos go through in one piece. */
 async function uploadFile(folderId: string, name: string, type: string, data: Buffer) {
   const token = await accessToken();
-  const start = await fetch(`${UPLOAD}?uploadType=resumable`, {
+  const start = await fetchRetry(`${UPLOAD}?uploadType=resumable`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -68,11 +90,12 @@ async function uploadFile(folderId: string, name: string, type: string, data: Bu
   });
   const location = start.headers.get('location');
   if (!start.ok || !location) throw new Error(`Google Drive menolak unggahan ${name} (${start.status})`);
-  const put = await fetch(location, {
-    method: 'PUT',
-    headers: { 'Content-Type': type, 'Content-Length': String(data.length) },
-    body: new Uint8Array(data),
-  });
+  const put = await fetchRetry(
+    location,
+    { method: 'PUT', headers: { 'Content-Type': type, 'Content-Length': String(data.length) }, body: new Uint8Array(data) },
+    3,
+    120_000
+  );
   if (!put.ok) throw new Error(`Unggahan ${name} gagal (${put.status})`);
 }
 

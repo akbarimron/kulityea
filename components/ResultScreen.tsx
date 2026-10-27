@@ -33,7 +33,7 @@ function MediaCard({ title, children, href, file }: { title: string; children: R
 
 type ShareState =
   | { status: 'loading' }
-  | { status: 'ready'; url: string; drive: boolean; partial?: boolean }
+  | { status: 'ready'; url: string; drive: boolean; partial?: boolean; driveFailed?: boolean }
   | { status: 'error'; message: string }
   | { status: 'unavailable' };
 
@@ -52,7 +52,7 @@ function ShareCard() {
     try {
       const result = await uploadSession(useBooth.getState().outputs);
       setOutputs({ shareUrl: result.url });
-      setState({ status: 'ready', url: result.url, drive: result.mode === 'drive', partial: result.partial });
+      setState({ status: 'ready', url: result.url, drive: result.mode === 'drive', partial: result.partial, driveFailed: result.driveFailed });
     } catch (err) {
       setState({ status: 'error', message: (err as Error).message });
     }
@@ -77,6 +77,15 @@ function ShareCard() {
               ? 'Semua foto dan video sesi ini ada di satu folder Google Drive.'
               : 'HP harus tersambung ke WiFi yang sama dengan laptop photobooth.'}
           </p>
+          {state.driveFailed && (
+            <div className="w-full space-y-1 rounded-xl bg-sun/15 p-3">
+              <p className="text-sm font-semibold">Google Drive tidak tersambung</p>
+              <p className="text-sm text-ink-soft">Cek internet laptop, lalu kirim ulang.</p>
+              <button onClick={run} className="h-11 text-sm font-semibold text-leaf underline underline-offset-4">
+                Kirim ulang ke Google Drive
+              </button>
+            </div>
+          )}
           {state.partial && <p className="text-sm text-ink-soft">Video terlalu besar untuk diunggah dari sini, pakai tombol Unduh.</p>}
           <p className="break-all text-xs text-ink-soft">{state.url}</p>
         </div>
